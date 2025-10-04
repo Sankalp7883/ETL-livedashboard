@@ -1,0 +1,23 @@
+# Git ignore file 
+# Ignore virtual environments
+venv/
+venv312/
+
+# Ignore Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore system files
+.DS_Store
+Thumbs.db
+
+# Ignore database files
+*.db
+
+# Ignore Excel/PDF test data if not needed
+*.xlsx
+*.xls
+*.csv
+*.pdf
