@@ -1,124 +1,125 @@
 import sqlite3
 import pandas as pd
 import streamlit as st
+import os
+from io import BytesIO
 
 DB_FILE = "datawarehouse.db"
 
 # -------------------------------
-# Load table names dynamically
+# Helper: Load tables from DB
 # -------------------------------
 def get_table_names():
+    if not os.path.exists(DB_FILE):
+        return []
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
         tables = [r[0] for r in cursor.fetchall()]
     return tables
 
-# -------------------------------
-# Load a table into a DataFrame
-# -------------------------------
 def load_table(table_name):
     with sqlite3.connect(DB_FILE) as conn:
-        df = pd.read_sql_query(f"SELECT * FROM '{table_name}'", conn)
-
-    # --- Convert timestamp-like integers to readable datetime ---
-    for col in df.columns:
-        if pd.api.types.is_numeric_dtype(df[col]):
-            try:
-                if df[col].max() > 1e15 and df[col].min() > 1e12:  # Likely nanoseconds
-                    df[col] = pd.to_datetime(df[col], unit='ns', errors='ignore')
-                elif df[col].max() > 1e9 and df[col].min() > 1e8:  # Likely seconds
-                    df[col] = pd.to_datetime(df[col], unit='s', errors='ignore')
-            except Exception:
-                pass
-    return df
+        return pd.read_sql_query(f"SELECT * FROM '{table_name}'", conn)
 
 # -------------------------------
-# Streamlit App Layout
+# Streamlit Layout
 # -------------------------------
-st.set_page_config(page_title="ETL Flexible Dashboard", layout="wide")
-st.title("📊 ETL Flexible Dashboard")
+st.set_page_config(page_title="ETL Live Dashboard", layout="wide")
+st.title("📊 ETL Live Dashboard")
+st.caption("Explore existing datasets or upload your own Excel, CSV, or PDF files.")
 
 # -------------------------------
-# Load Tables
+# Section 1: Existing database tables
 # -------------------------------
+st.sidebar.header("📦 Existing Data in Database")
+
 tables = get_table_names()
-if not tables:
-    st.error("❌ No tables found in database. Please run `load_generic.py` first.")
-    st.stop()
+selected_df = None
 
-table_choice = st.selectbox("Choose a table to explore:", tables)
-df = load_table(table_choice)
+if tables:
+    table_choice = st.sidebar.selectbox("Select a table from database:", tables)
+    df = load_table(table_choice)
+    st.subheader(f"🧾 Preview: `{table_choice}`")
+    st.dataframe(df.head(50))
 
-# -------------------------------
-# Data Preview
-# -------------------------------
-st.subheader(f"📄 Preview of `{table_choice}`")
-st.dataframe(df.head(50))
+    st.markdown("### 🔍 Column Info")
+    info = pd.DataFrame({
+        "column": df.columns,
+        "dtype": df.dtypes.astype(str),
+        "missing_values": df.isna().sum(),
+    })
+    st.dataframe(info)
 
-# -------------------------------
-# Column Information
-# -------------------------------
-st.markdown("### 🧾 Column Information")
-info = pd.DataFrame({
-    "Column": df.columns,
-    "Data Type": df.dtypes.astype(str),
-    "Missing Values": df.isna().sum(),
-})
-st.dataframe(info)
+    selected_df = df
+else:
+    st.info("No tables found in the database yet. Upload files to create new datasets.")
 
 # -------------------------------
-# Sidebar Filters
+# Section 2: Upload new file
 # -------------------------------
-st.sidebar.header("🔎 Filters")
-filtered_df = df.copy()
+st.sidebar.header("📤 Upload New Data")
+uploaded = st.sidebar.file_uploader("Upload Excel, CSV, or PDF file", type=["xlsx", "csv", "pdf"])
 
-for col in df.columns:
-    if df[col].dtype == "object":
-        values = df[col].dropna().unique().tolist()
-        if 1 < len(values) <= 50:  # manageable filter options
-            choice = st.sidebar.multiselect(f"{col}", values)
-            if choice:
-                filtered_df = filtered_df[filtered_df[col].isin(choice)]
-
-# -------------------------------
-# Charts
-# -------------------------------
-st.markdown("### 📈 Data Visualization")
-
-numeric_cols = filtered_df.select_dtypes(include=["number"]).columns.tolist()
-datetime_cols = filtered_df.select_dtypes(include=["datetime64[ns]"]).columns.tolist()
-all_cols = df.columns.tolist()
-
-chart_type = st.selectbox("Choose chart type:", ["None", "Histogram", "Line Chart", "Bar Chart"])
-
-if chart_type != "None":
-    x_axis = st.selectbox("Select X-axis:", all_cols, key="xaxis")
-    y_axis = st.selectbox("Select Y-axis (numeric):", numeric_cols, key="yaxis")
-
-    if x_axis not in filtered_df.columns or y_axis not in filtered_df.columns:
-        st.warning("⚠️ Please select valid X and Y columns.")
+if uploaded:
+    st.subheader(f"Uploaded file: `{uploaded.name}`")
+    if uploaded.name.endswith(".csv"):
+        new_df = pd.read_csv(uploaded)
+    elif uploaded.name.endswith(".xlsx"):
+        new_df = pd.read_excel(uploaded)
     else:
-        try:
-            if chart_type == "Histogram":
-                st.bar_chart(filtered_df[y_axis])
-            elif chart_type == "Line Chart":
-                st.line_chart(filtered_df.set_index(x_axis)[y_axis])
-            elif chart_type == "Bar Chart":
-                grouped = filtered_df.groupby(x_axis, dropna=False)[y_axis].sum().reset_index()
-                st.bar_chart(grouped.set_index(x_axis))
-        except Exception as e:
-            st.error(f"Chart rendering failed: {e}")
+        st.warning("📄 PDF extraction not yet supported in this version.")
+        new_df = None
+
+    if new_df is not None:
+        st.dataframe(new_df.head(50))
+        st.success("✅ File loaded successfully!")
+
+        # Optional: Save uploaded data to DB
+        if st.checkbox("Save this uploaded data to database"):
+            table_name = f"user_upload_{uploaded.name.replace('.', '_')}"
+            with sqlite3.connect(DB_FILE) as conn:
+                new_df.to_sql(table_name, conn, if_exists="replace", index=False)
+            st.success(f"Saved to database as `{table_name}`")
+
+        selected_df = new_df
 
 # -------------------------------
-# Download filtered data
+# Section 3: Visualization
 # -------------------------------
-st.markdown("### 💾 Download Data")
-csv = filtered_df.to_csv(index=False).encode("utf-8")
-st.download_button(
-    "⬇️ Download as CSV",
-    csv,
-    f"{table_choice}_filtered.csv",
-    "text/csv",
-    key="download-csv"
-)
+if selected_df is not None:
+    st.markdown("### 📈 Visualization")
+
+    numeric_cols = selected_df.select_dtypes(include=["number"]).columns.tolist()
+    date_cols = selected_df.select_dtypes(include=["datetime64"]).columns.tolist()
+
+    chart_type = st.selectbox("Choose chart type:", ["None", "Histogram", "Line Chart", "Bar Chart"])
+
+    if chart_type != "None":
+        x_axis = st.selectbox("X-axis:", selected_df.columns)
+        y_axis = st.selectbox("Y-axis (numeric only):", numeric_cols)
+
+        if y_axis in selected_df.columns:
+            try:
+                if chart_type == "Histogram":
+                    st.bar_chart(selected_df[y_axis])
+                elif chart_type == "Line Chart":
+                    st.line_chart(selected_df.set_index(x_axis)[y_axis])
+                elif chart_type == "Bar Chart":
+                    grouped = selected_df.groupby(x_axis)[y_axis].sum().reset_index()
+                    st.bar_chart(grouped.set_index(x_axis))
+            except Exception as e:
+                st.warning(f"⚠️ Could not render chart: {e}")
+
+    # -------------------------------
+    # Download filtered data
+    # -------------------------------
+    st.markdown("### 💾 Download Data")
+    csv = selected_df.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "Download as CSV",
+        csv,
+        f"{uploaded.name if uploaded else table_choice}_data.csv",
+        "text/csv",
+        key="download-csv"
+    )
