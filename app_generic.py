@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 import os
-from google.genai import genai
+import google.generativeai as genai
 from dotenv import load_dotenv
 import io
 
