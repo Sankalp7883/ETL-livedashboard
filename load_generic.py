@@ -1,77 +1,90 @@
 import os
-import sqlite3
 import pandas as pd
-from extract_generic import extract_files
+import sqlite3
+import camelot
 from transform_generic import transform_dataset
 
-# -------------------------------
-# Database file and data folder
-# -------------------------------
 DB_FILE = "datawarehouse.db"
 DATA_DIR = "data"
 
 # -------------------------------
-# Save a DataFrame to SQLite
+# Function: Load file into DB
 # -------------------------------
 def load_to_db(df, table_name):
-    """Write transformed dataframe to SQLite database"""
+    with sqlite3.connect(DB_FILE) as conn:
+        df.to_sql(table_name, conn, if_exists="replace", index=False)
+    print(f"[INFO] ✅ Wrote table '{table_name}' with shape {df.shape}")
+
+# -------------------------------
+# Function: Extract data from files
+# -------------------------------
+def process_file(filepath):
+    filename = os.path.basename(filepath)
+    name, ext = os.path.splitext(filename)
+    ext = ext.lower()
+
+    if filename.startswith("~$"):
+        print(f"[SKIP] Temporary Excel file ignored: {filename}")
+        return None
+
     try:
-        with sqlite3.connect(DB_FILE) as conn:
-            df.to_sql(table_name, conn, if_exists="replace", index=False)
-        print(f"[INFO] ✅ Wrote table '{table_name}' with shape {df.shape}")
+        if ext in [".xlsx", ".xls"]:
+            print(f"[INFO] Reading Excel: {filepath}")
+            xls = pd.ExcelFile(filepath)
+            frames = []
+            for sheet in xls.sheet_names:
+                df = pd.read_excel(xls, sheet_name=sheet)
+                frames.append(df)
+            df = pd.concat(frames, ignore_index=True)
+            print(f"[INFO] Combined Excel shape: {df.shape}")
+            return df
+
+        elif ext == ".csv":
+            print(f"[INFO] Reading CSV: {filepath}")
+            df = pd.read_csv(filepath)
+            print(f"[INFO] CSV shape: {df.shape}")
+            return df
+
+        elif ext == ".pdf":
+            print(f"[INFO] Reading PDF: {filepath}")
+            print(f"[INFO] Trying Camelot first for PDF...")
+            tables = camelot.read_pdf(filepath, pages="all")
+            if tables:
+                dfs = [t.df for t in tables]
+                df = pd.concat(dfs, ignore_index=True)
+                print(f"[INFO] ✅ Extracted {len(tables)} tables using Camelot. Shape={df.shape}")
+                return df
+            else:
+                print(f"[WARN] No tables found in PDF.")
+                return None
+
+        else:
+            print(f"[WARN] Unsupported file type: {ext}")
+            return None
+
     except Exception as e:
-        print(f"[ERROR] ❌ Failed to write table {table_name}: {e}")
+        print(f"[❌ ERROR] Failed processing {filepath}: {e}")
+        return None
 
 # -------------------------------
 # Main ETL Process
 # -------------------------------
-def main():
-    # Find all files in /data folder
-    if not os.path.exists(DATA_DIR):
-        print(f"[ERROR] ❌ Data folder not found: {DATA_DIR}")
-        return
-
-    files = [
-        os.path.join(DATA_DIR, f)
-        for f in os.listdir(DATA_DIR)
-        if not f.startswith(".") and not os.path.isdir(os.path.join(DATA_DIR, f))
-    ]
-
+if __name__ == "__main__":
+    print(f"[INFO] Searching for files in {DATA_DIR}...")
+    files = [os.path.join(DATA_DIR, f) for f in os.listdir(DATA_DIR)]
     print(f"[INFO] Found {len(files)} files: {files}")
-    if not files:
-        print("[WARN] ⚠️ No files found in the data directory.")
-        return
 
-    for file_path in files:
+    for f in files:
+        print(f"\n[INFO] Processing {f} ...")
+        df = process_file(f)
+        if df is None or df.empty:
+            continue
+
         try:
-            print(f"\n[INFO] Processing {file_path} ...")
-            df = extract_files(file_path)
-
-            # Some extractors may return list of DataFrames (Excel/PDF)
-            if isinstance(df, list):
-                df = pd.concat(df, ignore_index=True)
-
-            if df is None or df.empty:
-                print(f"[WARN] No data extracted from {file_path}")
-                continue
-
-            # Create table name based on file name
-            base_name = os.path.splitext(os.path.basename(file_path))[0]
-            table_name = base_name.lower().replace(" ", "_")
-
-            # 🧠 FIX: pass output_table argument to transform_dataset
-            df_transformed = transform_dataset(df, table_name)
-
-            # Load to SQLite
-            load_to_db(df_transformed, table_name)
-
+            table_name = os.path.splitext(os.path.basename(f))[0].lower().replace(" ", "_")
+            df = transform_dataset(df, table_name)
+            load_to_db(df, table_name)
         except Exception as e:
-            print(f"[❌ ERROR] Failed processing {file_path}: {e}")
+            print(f"[❌ ERROR] Failed processing {f}: {e}")
 
     print("\n✅ All done! Database updated successfully.")
-
-# -------------------------------
-# Run the script
-# -------------------------------
-if __name__ == "__main__":
-    main()
