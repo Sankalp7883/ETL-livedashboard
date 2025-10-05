@@ -1,0 +1,25 @@
+# Core libraries
+pandas
+numpy
+
+# Streamlit dashboard
+streamlit
+
+# Database
+sqlite3-binary
+
+# Excel and CSV support
+openpyxl
+
+# PDF extraction
+camelot-py
+PyPDF2
+
+# Environment variable management
+python-dotenv
+
+# Gemini AI SDK
+google-genai
+
+# Optional: data cleaning and validation
+chardet
