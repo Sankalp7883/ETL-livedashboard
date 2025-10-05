@@ -1,72 +1,93 @@
 import pandas as pd
 import numpy as np
-import re
-import warnings
 
-# Suppress only pandas datetime "infer format" spam
-warnings.filterwarnings("ignore", message="Could not infer format", category=UserWarning)
+def transform_dataset(df, output_table):
+    """
+    Generic data transformation function for ETL dashboard.
+    --------------------------------------------------------
+    1️⃣ Cleans column names
+    2️⃣ Handles duplicates and missing values
+    3️⃣ Automatically detects data types (datetime, numeric, text)
+    4️⃣ Converts timestamps like 1714176000000000000 → real dates
+    5️⃣ Drops empty rows
+    """
 
-def _clean_colname(c, idx=None):
-    """Clean column names: lowercase, replace spaces with underscores, remove special chars."""
-    if not isinstance(c, str):
-        c = str(c) if c is not None else f"col{idx}"
-    c = c.strip().lower()
-    c = re.sub(r"[^\w\s]", "", c)
-    c = re.sub(r"\s+", "_", c)
-    if c == "":
-        c = f"col{idx}"
-    return c
+    print(f"[INFO] Transforming dataset for table: {output_table}")
 
-def infer_types(df):
-    """Try to infer column types: numeric, datetime, categorical."""
-    types = {}
+    if df is None or df.empty:
+        print(f"[WARN] Empty DataFrame received for {output_table}")
+        return df
+
+    # ---------------------------------------------------------------------
+    # 🧹 STEP 1 — Clean column names
+    # ---------------------------------------------------------------------
+    df.columns = (
+        df.columns.astype(str)
+        .str.strip()
+        .str.replace(r"[^\w\s]", "_", regex=True)  # replace special chars
+        .str.replace("__+", "_", regex=True)       # avoid double underscores
+        .str.lower()
+    )
+
+    # ---------------------------------------------------------------------
+    # 🩺 STEP 2 — Handle duplicates, empties
+    # ---------------------------------------------------------------------
+    df = df.loc[:, ~df.columns.duplicated()]
+    df = df.replace(["", "NA", "NaN", "nan", "null", "NULL"], np.nan)
+
+    # ---------------------------------------------------------------------
+    # 🔍 STEP 3 — Detect and fix data types
+    # ---------------------------------------------------------------------
     for col in df.columns:
-        s = df[col].dropna()
-        if s.empty:
-            types[col] = "unknown"
-            continue
+        s = df[col]
 
-        # Numeric?
-        try:
-            pd.to_numeric(s, errors="raise")
-            types[col] = "numeric"
-            print(f"[INFO] Column {col}: numeric")
-            continue
-        except Exception:
-            pass
+        # --- Date detection based on column name ---
+        if any(word in col for word in ["date", "time", "timestamp"]):
+            try:
+                df[col] = pd.to_datetime(s, errors="coerce", infer_datetime_format=True)
+                print(f"[INFO] Column '{col}': converted to datetime (by name)")
+                continue
+            except Exception:
+                pass
 
-        # Datetime?
-        parsed = pd.to_datetime(s, errors="coerce")
-        if parsed.notna().sum() > 0.6 * len(s):
-            types[col] = "datetime"
-            print(f"[INFO] Column {col}: datetime")
-            continue
+        # --- Try to detect datetime based on values ---
+        if s.dropna().astype(str).str.match(r"^\d{4}-\d{2}-\d{2}$").any():
+            try:
+                df[col] = pd.to_datetime(s, errors="coerce")
+                print(f"[INFO] Column '{col}': converted to datetime (by value pattern)")
+                continue
+            except Exception:
+                pass
 
-        # Otherwise categorical
-        types[col] = "categorical"
-        print(f"[INFO] Column {col}: categorical")
+        # --- Handle numeric timestamps ---
+        if pd.api.types.is_numeric_dtype(s):
+            try:
+                max_val = s.dropna().max()
+                if max_val > 1e14:  # nanoseconds
+                    df[col] = pd.to_datetime(s, errors="coerce", unit="ns")
+                    print(f"[INFO] Column '{col}': converted epoch ns → datetime")
+                elif max_val > 1e10:  # milliseconds
+                    df[col] = pd.to_datetime(s, errors="coerce", unit="ms")
+                    print(f"[INFO] Column '{col}': converted epoch ms → datetime")
+                else:
+                    df[col] = pd.to_numeric(s, errors="coerce")
+                    print(f"[INFO] Column '{col}': numeric")
+                continue
+            except Exception:
+                pass
 
-    return types
+        # --- Otherwise treat as categorical/text ---
+        df[col] = s.astype(str).str.strip()
+        print(f"[INFO] Column '{col}': categorical")
 
-def transform_generic(df, table_name=None):
-    """Clean up dataframe: rename columns, coerce types, drop duplicates."""
-    df = df.copy()
+    # ---------------------------------------------------------------------
+    # 🧽 STEP 4 — Drop fully empty rows
+    # ---------------------------------------------------------------------
+    df = df.dropna(how="all")
 
-    # Clean column names
-    df.columns = [_clean_colname(c, i) for i, c in enumerate(df.columns)]
+    # ---------------------------------------------------------------------
+    # 📊 STEP 5 — Summary
+    # ---------------------------------------------------------------------
+    print(f"[INFO] ✅ Transformed table '{output_table}', shape={df.shape}")
 
-    # Drop empty columns
-    df = df.dropna(axis=1, how="all")
-
-    # Infer and apply types
-    col_types = infer_types(df)
-    for col, typ in col_types.items():
-        if typ == "numeric":
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-        elif typ == "datetime":
-            df[col] = pd.to_datetime(df[col], errors="coerce")
-
-    df = df.drop_duplicates()
-
-    print(f"[INFO] Transformed table {table_name}, shape={df.shape}")
-    return df, col_types
+    return df

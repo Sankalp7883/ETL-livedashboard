@@ -1,0 +1,14 @@
+#after saving files open command window and perform the following instusctions 
+
+cd hackthon_etl
+
+python -m venv venv
+venv\Scripts\activate     # on Windows
+# or
+source venv/bin/activate  # on macOS/Linux
+
+pip install -r requirements.txt
+
+python load_generic.py
+
+streamlit run app_generic.py
