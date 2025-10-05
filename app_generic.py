@@ -1,31 +1,33 @@
-import streamlit as st
-import pandas as pd
 import sqlite3
-import os
-import google.generativeai as genai
-from dotenv import load_dotenv
+import pandas as pd
+import streamlit as st
 import io
+import os
+from datetime import timedelta
+import google.generativeai as genai
 
-# -------------------------------
-# Load environment variables
-# -------------------------------
+from dotenv import load_dotenv
 load_dotenv()
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-if not GEMINI_API_KEY:
-    st.error("❌ Missing Gemini API key! Add it in a `.env` file like:\nGEMINI_API_KEY=your_key_here")
-    st.stop()
-
-# Initialize Gemini client
-client = genai.Client(api_key=GEMINI_API_KEY)
-MODEL = "models/gemini-2.5-flash"
 
 # -------------------------------
-# Database helpers
+# Configuration
 # -------------------------------
 DB_FILE = "datawarehouse.db"
 
+# Load Gemini API key
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY", "")
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+    model = genai.GenerativeModel("gemini-2.0-flash")
+else:
+    model = None
+
+# -------------------------------
+# Utility Functions
+# -------------------------------
 def get_table_names():
+    """Get all tables from SQLite DB."""
     try:
         with sqlite3.connect(DB_FILE) as conn:
             cursor = conn.cursor()
@@ -34,73 +36,41 @@ def get_table_names():
     except Exception:
         return []
 
-def load_table(name):
+def load_table(table_name):
+    """Load selected table into DataFrame."""
     with sqlite3.connect(DB_FILE) as conn:
-        return pd.read_sql_query(f"SELECT * FROM '{name}'", conn)
+        return pd.read_sql_query(f"SELECT * FROM '{table_name}'", conn)
 
 # -------------------------------
-# Streamlit layout
+# Streamlit Layout
 # -------------------------------
-st.set_page_config(page_title="ETL Dashboard + Gemini Chatbot", layout="wide")
-st.title("📊 ETL Live Dashboard + 🤖 Gemini Chat Assistant")
+st.set_page_config(page_title="ETL Live Dashboard", layout="wide")
 
-# --- Sidebar: Chatbot ---
-st.sidebar.header("💬 Gemini Chatbot")
-
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
-
-prompt = st.sidebar.text_area("Ask Gemini about your data:")
-if st.sidebar.button("Ask Gemini"):
-    try:
-        context = ""
-        # If user already loaded a dataframe, include a data summary
-        if "df" in st.session_state and st.session_state.df is not None:
-            df = st.session_state.df
-            csv_buf = io.StringIO()
-            df.head(100).to_csv(csv_buf, index=False)
-            context = f"Dataset preview (first 100 rows):\n{csv_buf.getvalue()}\n\n"
-        else:
-            context = "No dataset currently loaded.\n"
-
-        full_prompt = (
-            f"You are a data analyst. Use the dataset below to answer the question.\n\n"
-            f"{context}\n\nUser Question: {prompt}\n"
-        )
-
-        response = client.models.generate_content(
-            model=MODEL,
-            contents=full_prompt
-        )
-
-        reply = response.text if hasattr(response, "text") else "⚠️ No response received."
-        st.session_state.chat_history.append(("You", prompt))
-        st.session_state.chat_history.append(("Gemini", reply))
-    except Exception as e:
-        st.sidebar.error(f"⚠️ Gemini Error: {e}")
-
-# Display chat history
-for sender, msg in st.session_state.chat_history[-6:]:
-    st.sidebar.markdown(f"**{sender}:** {msg}")
-
-st.sidebar.divider()
+# --- Header ---
+col1, col2 = st.columns([3, 1])
+with col1:
+    st.title("📊 ETL Live Dashboard")
+with col2:
+    st.image("https://cdn-icons-png.flaticon.com/512/4712/4712107.png", width=70)
 
 # --- Sidebar: Data Source ---
 st.sidebar.header("📁 Data Source")
 source_option = st.sidebar.radio("Choose data source:", ["Existing DB Table", "Upload File"])
 
 df = None
+
 if source_option == "Existing DB Table":
     tables = get_table_names()
     if not tables:
-        st.error("⚠️ No tables found in the database. Run `load_generic.py` first.")
+        st.error("⚠️ No tables found in the database. Please run `load_generic.py` first.")
         st.stop()
+
     table_choice = st.sidebar.selectbox("Select a table:", tables)
     df = load_table(table_choice)
     st.success(f"✅ Loaded table: `{table_choice}`")
 
 elif source_option == "Upload File":
-    uploaded = st.sidebar.file_uploader("📤 Upload Excel/CSV file", type=["xlsx", "csv"])
+    uploaded = st.sidebar.file_uploader("📤 Upload Excel, CSV or PDF file", type=["xlsx", "csv"])
     if uploaded:
         try:
             if uploaded.name.endswith(".xlsx"):
@@ -110,64 +80,108 @@ elif source_option == "Upload File":
         except Exception as e:
             st.error(f"Error reading file: {e}")
 
+# Stop if no data loaded
 if df is None:
-    st.info("👈 Upload a file or choose an existing table to start.")
+    st.info("👈 Please upload a file or choose an existing table to start.")
     st.stop()
 
-st.session_state.df = df  # Save dataset for chatbot context
+# -------------------------------
+# Data Cleaning
+# -------------------------------
+df = df.dropna(axis=1, how="all")  # Drop columns that are fully NaN
+df = df.dropna(how="all")          # Drop rows that are fully NaN
+df = df.loc[:, ~df.columns.str.contains("^Unnamed")]  # Remove unnamed columns
 
 # -------------------------------
 # Data Preview
 # -------------------------------
 st.subheader("🔍 Data Preview")
-st.dataframe(df.head(50), width="stretch")
+st.dataframe(df.head(50), width='stretch')
 
 # -------------------------------
-# Column Info
+# Column Summary
 # -------------------------------
+def readable_dtype(dtype):
+    if "int" in str(dtype) or "float" in str(dtype):
+        return "Numeric"
+    elif "datetime" in str(dtype):
+        return "Date"
+    else:
+        return "Text"
+
 st.subheader("📋 Column Summary")
 info = pd.DataFrame({
     "Column": df.columns,
-    "Data Type": df.dtypes.astype(str),
-    "Missing Values": df.isna().sum(),
+    "Data Type": [readable_dtype(t) for t in df.dtypes],
+    "Missing Values": df.isna().sum()
 })
-st.dataframe(info, width="stretch")
+st.dataframe(info, width='stretch')
 
 # -------------------------------
-# Filters
+# Filters (Simple Style)
 # -------------------------------
-st.sidebar.header("🔎 Filters")
+st.sidebar.header("🔎 Apply Filters")
 filtered_df = df.copy()
 
 for col in df.columns:
     if df[col].dtype == "object":
-        values = df[col].dropna().unique().tolist()
-        if 1 < len(values) <= 50:
-            selected = st.sidebar.multiselect(f"{col}:", values)
+        unique_vals = df[col].dropna().unique().tolist()
+        if 1 < len(unique_vals) <= 50:
+            selected = st.sidebar.multiselect(f"{col}:", unique_vals, default=[])
             if selected:
                 filtered_df = filtered_df[filtered_df[col].isin(selected)]
 
 # -------------------------------
-# Charts
+# Charts Section
 # -------------------------------
-st.subheader("📈 Data Visualization")
+st.subheader("📈 Visualization")
+
+chart_type = st.selectbox("Select chart type:", ["None", "Histogram", "Line Chart", "Bar Chart"])
 numeric_cols = filtered_df.select_dtypes(include=["number"]).columns.tolist()
 
-chart_type = st.selectbox("Select chart type:", ["None", "Bar", "Line", "Histogram"])
-if chart_type != "None" and numeric_cols:
-    x_axis = st.selectbox("X-axis:", df.columns)
+if chart_type != "None" and not filtered_df.empty and numeric_cols:
+    x_axis = st.selectbox("X-axis:", filtered_df.columns)
     y_axis = st.selectbox("Y-axis (numeric):", numeric_cols)
-    if chart_type == "Bar":
-        grouped = filtered_df.groupby(x_axis, dropna=False)[y_axis].sum().reset_index()
-        st.bar_chart(grouped.set_index(x_axis))
-    elif chart_type == "Line":
-        st.line_chart(filtered_df.set_index(x_axis)[y_axis])
-    elif chart_type == "Histogram":
-        st.bar_chart(filtered_df[y_axis])
+
+    try:
+        if chart_type == "Histogram":
+            st.bar_chart(filtered_df[y_axis])
+        elif chart_type == "Line Chart":
+            st.line_chart(filtered_df.set_index(x_axis)[y_axis])
+        elif chart_type == "Bar Chart":
+            grouped = filtered_df.groupby(x_axis, dropna=False)[y_axis].sum().reset_index()
+            st.bar_chart(grouped.set_index(x_axis))
+    except Exception as e:
+        st.warning(f"⚠️ Could not render chart: {e}")
 
 # -------------------------------
-# Download Filtered Data
+# Download Section
 # -------------------------------
 st.subheader("💾 Download Filtered Data")
 csv = filtered_df.to_csv(index=False).encode("utf-8")
-st.download_button("⬇️ Download CSV", csv, "filtered_data.csv", "text/csv")
+st.download_button(
+    label="⬇️ Download as CSV",
+    data=csv,
+    file_name="filtered_data.csv",
+    mime="text/csv"
+)
+
+# -------------------------------
+# Gemini Chatbot (Top Right Sidebar)
+# -------------------------------
+st.sidebar.markdown("---")
+st.sidebar.header("🤖 Gemini Chatbot")
+
+if model:
+    user_query = st.sidebar.text_area("Ask Gemini about your data:")
+    if st.sidebar.button("Ask"):
+        if not user_query.strip():
+            st.sidebar.warning("Please enter a question.")
+        else:
+            try:
+                response = model.generate_content(f"You are a data analyst. Dataset preview:\n{df.head(10)}\n\nUser Question: {user_query}")
+                st.sidebar.success(response.text)
+            except Exception as e:
+                st.sidebar.error(f"⚠️ Gemini Error: {e}")
+else:
+    st.sidebar.warning("Gemini API key not configured. Add it to `.env` or Streamlit secrets.")
