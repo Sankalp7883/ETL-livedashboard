@@ -29,3 +29,20 @@ This project can handle multiple data sources like **Excel, CSV, and PDF** files
 ---
 
 ## 📂 Project Structure
+
+hackathon_etl/
+│
+├── app_generic.py               # Streamlit dashboard
+├── extract_generic.py           # Extracts data from files
+├── transform_generic.py         # Cleans & transforms datasets
+├── load_generic.py              # Combines Extract + Transform + Load
+│
+├── data/                        # Put your Excel, PDF, CSV files here
+│   ├── ABC_Book_Stores_Inventory_Register.xlsx
+│   ├── dataset_pdf.pdf
+│   └── financial_sample.csv
+│
+├── datawarehouse.db             # Generated SQLite database
+├── requirements.txt             # Dependencies list
+└── README.md                    # Project documentation
+
