@@ -21,3 +21,5 @@ Thumbs.db
 *.xls
 *.csv
 *.pdf
+
+.env

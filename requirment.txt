@@ -26,3 +26,5 @@ tqdm==4.66.5
 
 # --- Streamlit Deployment Helper (for caching + file upload stability) ---
 watchdog==4.0.2
+
+openai
