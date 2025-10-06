@@ -1,9 +1,12 @@
 streamlit
 pandas
 numpy
-sqlite3-binary
 python-dotenv
 google-generativeai
 camelot-py
 pypdf
 openpyxl
+tabula-py
+sqlalchemy
+chardet
+
